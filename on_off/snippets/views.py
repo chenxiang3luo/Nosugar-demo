@@ -15,7 +15,7 @@ import re
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.response import Response
-# from snippets.util import off_on_detect
+from snippets.util import validate_phone_number
 import json
 
 
@@ -28,42 +28,48 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 class QueryViewSet(viewsets.ModelViewSet):
-    """
-    This viewset automatically provides `list` and `retrieve` actions.
-    """
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
     queryset = Query.objects.all()
     serializer_class = QuerySerializer
     # lookup_field = 'number'
 
+    # return filtered task with some params
     def list(self, request, *args, **kwargs):
         params = request.query_params
         user = request.user
         user_id = user.id
-        # 后续美化参数传入 ,**{k: v for k, v in params.items() if v is not None}
         number = params.get('number')
         start_date = params.get('start_date')
         end_date = params.get('end_date')
+
+        # process date format
         if(start_date):
             start_date = start_date.replace(' ','T')
             end_date = end_date.replace(' ','T')
+
+        # filter results with different conditions of params
+        # returen all
         if(number is None and start_date is None):
             tasks = Task.objects.filter(user_id=user_id)
+
+        # returen results of a certain number
         elif(number is not None and start_date is None):
             queries = Query.objects.filter(number__contains=number)
             queries = QuerySerializer(queries,many=True).data
-            
             task_ids =  [query['task_id'] for query in queries]
             task_ids = list(set(task_ids))
             tasks = Task.objects.filter(id__in=task_ids,user_id=user_id)
+
+        # return results of a certain number within a period of time
         elif(number is not None and start_date is not None):
             queries = Query.objects.filter(number__contains=number)
             queries = QuerySerializer(queries,many=True).data
-
             task_ids =  [query['task_id'] for query in queries]
             task_ids = list(set(task_ids))
             tasks = Task.objects.filter(id__in=task_ids,query_date__range=(start_date,end_date),user_id=user_id)
+
+        # return results of all number within a period of time
         elif(number is None and start_date is not None):
             tasks = Task.objects.filter(query_date__range=(start_date,end_date),user_id=user_id)
         serializer = TaskSerializer(tasks, many=True)
@@ -78,7 +84,6 @@ class QueryViewSet(viewsets.ModelViewSet):
         return Response(rep)
 
     def create(self, request, *args, **kwargs):
-
         user = request.user
         serializer = QuerySerializer(data=request.data)
         serializer.is_valid()
@@ -86,7 +91,8 @@ class QueryViewSet(viewsets.ModelViewSet):
         serializer.data
 
         return Response({'message': 'create action executed'})
-
+    
+    # return complete information of a certain task
     def retrieve(self, request, pk):
         params = request.query_params
         user = request.user
@@ -105,6 +111,7 @@ class QueryViewSet(viewsets.ModelViewSet):
 
         return Response(data)
     
+    # return the process of a certain task
     @action(detail=False, methods=['get'])
     def process(self, request, pk):
         params = request.query_params
@@ -118,12 +125,16 @@ class QueryViewSet(viewsets.ModelViewSet):
             return Response({'status':'请求用户错误'})
         return Response({'finished':task['finish_cnt'],'total':task['total_cnt']})
 
+    # delete a certain task 
     def destroy(self, request, pk):
         user = request.user
         user_id = user.id
         queries = Task.objects.filter(id=pk,user_id=user_id).delete()
         return Response({'status': 'ok'})
 
+    # detect the satus of phone via onther api with phone number
+
+    # off_on_detect third-api
     @action(detail=False, methods=['post'])
     def detect_batch(self, request):
         lock = threading.Lock()
@@ -151,6 +162,7 @@ class QueryViewSet(viewsets.ModelViewSet):
                     'state':mssg['data']['code'],
                     'carrier': mssg['data']['extend']['isp_name']
                 }
+            # Maintaining data consistency
             lock.acquire()
             try:
                 task_instance = Task.objects.get(id=task_id)
@@ -160,7 +172,7 @@ class QueryViewSet(viewsets.ModelViewSet):
                 if(mq.is_valid()):
                     mq.save(task=task_instance)
             finally:
-                # 释放锁
+                # release lock
                 lock.release()
             # semaphore.release()
             return mq.data
@@ -169,12 +181,15 @@ class QueryViewSet(viewsets.ModelViewSet):
         token = request.auth
         key = token.key
         numbers = request.data['numbers']
+        # restrick maxium number of query numbers
         numbers = numbers[:100]
+        # vertify the format of numbers
         if(validate_phone_number(numbers)):
             pass
         else:
             return Response({'status':"wrong format"})
 
+        # the case of only one number 
         if(len(numbers) > 1):
             is_batch = True
             data = {
@@ -192,6 +207,7 @@ class QueryViewSet(viewsets.ModelViewSet):
                 threads.append(thread)
                 thread.start()
 
+            # count the number of queries fo a certain user 
             ct = CustomToken.objects.get(pk=key)
             ct.count += 1
             ct.save()
@@ -203,10 +219,10 @@ class QueryViewSet(viewsets.ModelViewSet):
                 'query_date':str(task_s.data['query_date']).replace('T',' ')
             }
             return Response(rep)
-            
+        
+        # the case of a batch of numbers
         else:
             is_batch = False
-
             data = {
                 "is_batch":is_batch,
                 "total_cnt":len(numbers)
@@ -229,19 +245,14 @@ class QueryViewSet(viewsets.ModelViewSet):
             }
             return Response(rep)
 
-def validate_phone_number(phone_numbers):
-    for num in phone_numbers:
-        pattern = r'^1[3456789]\d{9}$'
-        match = re.match(pattern, str(num))
-        if match:
-            pass
-        else:
-            return False
-    return True
 
 
 
+# user register and login
+# when logining ,return token
 class UserRegistrationView(viewsets.ModelViewSet):
+
+    # register user
     @action(detail=False, methods=['post'])
     def register(self, request):
         serializer = UserSerializer(data=request.data)
@@ -250,12 +261,15 @@ class UserRegistrationView(viewsets.ModelViewSet):
 
         return Response({'message': 'User registered successfully.'})
 
+    # user login and returen token
     @action(detail=False, methods=['post'])
     def login(self, request):
         username = request.data['username']
         password = request.data['password']
+        # vertify if user exist
         user = authenticate(request, username=username, password=password)
         if user is not None:
+            # vertify if token been send
             try:
                 token = Token.objects.get(user=user)
 
